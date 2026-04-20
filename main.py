@@ -6,28 +6,21 @@ import kagglehub
 
 from fastapi import FastAPI
 from pydantic import BaseModel
-
 from sentence_transformers import SentenceTransformer
-from transformers import pipeline
 
 # -----------------------------
 # 🚀 INIT FASTAPI
 # -----------------------------
-app = FastAPI(title="MAHI AI Backend")
+app = FastAPI(title="MAHI Geeta AI")
 
 # -----------------------------
-# 🔹 LOAD MODELS (ON START)
+# 🔹 LOAD SMALL MODEL (LOW MEMORY)
 # -----------------------------
-print("🔄 Loading models...")
+print("🔄 Loading embedding model...")
 
-embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+model = SentenceTransformer("paraphrase-MiniLM-L3-v2")
 
-emotion_classifier = pipeline(
-    "text-classification",
-    model="j-hartmann/emotion-english-distilroberta-base"
-)
-
-print("✅ Models loaded")
+print("✅ Model loaded")
 
 # -----------------------------
 # 🔹 LOAD DATASET
@@ -39,15 +32,16 @@ files = os.listdir(path)
 
 df = pd.read_csv(os.path.join(path, files[0]))
 
-# Flexible column mapping
+# Flexible columns
 df["text"] = df[df.columns[0]]
 df["translation"] = df[df.columns[1]]
 
-def clean_text(text):
-    return str(text).lower().strip()
-
-df["translation"] = df["translation"].apply(clean_text)
+# Clean
+df["translation"] = df["translation"].astype(str).str.lower().str.strip()
 df = df[df["translation"] != ""].dropna().reset_index(drop=True)
+
+# 🔥 IMPORTANT: reduce dataset for memory
+df = df.sample(100)
 
 print("✅ Dataset ready")
 
@@ -56,14 +50,13 @@ print("✅ Dataset ready")
 # -----------------------------
 print("🔄 Creating embeddings...")
 
-embeddings = embed_model.encode(
-    df["translation"].tolist(),
-    show_progress_bar=True
+embeddings = model.encode(
+    df["translation"].tolist()
 )
 
 embeddings = np.array(embeddings).astype("float32")
 
-# Normalize for cosine similarity
+# Normalize
 faiss.normalize_L2(embeddings)
 
 # -----------------------------
@@ -76,86 +69,52 @@ index.add(embeddings)
 print("✅ FAISS ready")
 
 # -----------------------------
-# 🔹 EMOTION MAP
-# -----------------------------
-emotion_to_category = {
-    "anger": "Self Control",
-    "fear": "Bhakti Yoga",
-    "joy": "Gratitude",
-    "sadness": "Detachment",
-    "love": "Devotion",
-    "surprise": "Awareness"
-}
-
-# -----------------------------
 # 🔹 REQUEST MODEL
 # -----------------------------
 class UserInput(BaseModel):
     text: str
 
 # -----------------------------
-# 🔹 FUNCTIONS
+# 🔹 SEARCH FUNCTION
 # -----------------------------
-def detect_emotion(text):
-    try:
-        result = emotion_classifier(text)[0]
-        return result["label"].lower()
-    except:
-        return "neutral"
-
-def retrieve_shlokas(query, top_k=3):
-    query_vec = embed_model.encode([query]).astype("float32")
+def search_shloka(query):
+    query_vec = model.encode([query]).astype("float32")
     faiss.normalize_L2(query_vec)
 
-    distances, indices = index.search(query_vec, top_k)
+    distances, indices = index.search(query_vec, 1)
 
-    results = []
-    for i in indices[0]:
-        results.append({
-            "shloka": df.iloc[i]["text"],
-            "meaning": df.iloc[i]["translation"]
-        })
+    result = df.iloc[indices[0][0]]
 
-    return results
-
-def generate_advice(emotion, category):
-    return (
-        f"You are experiencing {emotion}. "
-        f"The Bhagavad Gita suggests following {category}. "
-        f"Apply this wisdom in your actions and thoughts."
-    )
+    return {
+        "shloka": result["text"],
+        "meaning": result["translation"]
+    }
 
 # -----------------------------
-# 🔹 API ROUTES
+# 🔹 ROUTES
 # -----------------------------
 @app.get("/")
 def home():
-    return {"message": "MAHI AI is running 🚀"}
+    return {"message": "Geeta AI running 🚀"}
 
 @app.post("/analyze")
 def analyze(input: UserInput):
 
-    user_input = input.text.strip()
+    text = input.text.strip()
 
-    if not user_input:
-        return {"status": "error", "message": "Please enter a valid problem"}
+    if not text:
+        return {"status": "error", "message": "Empty input"}
 
-    emotion = detect_emotion(user_input)
-    category = emotion_to_category.get(emotion, "General")
-
-    shlokas = retrieve_shlokas(user_input, top_k=3)
-    advice = generate_advice(emotion, category)
+    result = search_shloka(text)
 
     return {
         "status": "success",
-        "emotion": emotion,
-        "category": category,
-        "results": shlokas,
-        "advice": advice
+        "input": text,
+        "result": result
     }
 
 # -----------------------------
-# 🔹 RUN SERVER (LOCAL)
+# 🔹 LOCAL RUN
 # -----------------------------
 if __name__ == "__main__":
     import uvicorn
